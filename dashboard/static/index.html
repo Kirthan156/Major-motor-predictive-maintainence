@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor Health Live</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --series: #2a78d6; --series-2: #eb6834;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-text: #006300;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --series: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --series: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1240px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--ink-2); }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--ring); background: var(--surface); font-size: 12px; color: var(--ink-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.badge.dummy { border-color: var(--warning); color: var(--ink); }
+.spacer { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 14px; min-width: 0; }
+.grid { display: grid; gap: 12px; }
+.top { grid-template-columns: minmax(0, 1.25fr) minmax(0, 2fr); margin-bottom: 12px; }
+.tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.charts { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
+.bottom { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-bottom: 12px; }
+@media (max-width: 860px) {
+  .top, .charts, .bottom { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.state { display: flex; align-items: center; gap: 12px; }
+.state-icon { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 22px; font-weight: 700; color: #fff; background: var(--muted); flex: none; }
+.state-label { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.state-sub { color: var(--ink-2); font-size: 13px; }
+.state.normal .state-icon { background: var(--good); }
+.state.watch .state-icon { background: var(--warning); color: #0b0b0b; }
+.state.alarm .state-icon { background: var(--critical); }
+.why { margin: 12px 0 0; padding: 0; list-style: none; }
+.why li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0;
+  border-top: 1px solid var(--grid); font-size: 13px; }
+.why .z { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tile .k { font-size: 12px; color: var(--ink-2); }
+.tile .v { font-size: 24px; font-weight: 650; }
+.tile .u { font-size: 13px; color: var(--muted); margin-left: 3px; font-weight: 400; }
+.tile .s { font-size: 12px; color: var(--muted); }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.chart-head .now { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.chart { position: relative; height: 170px; }
+.chart canvas { width: 100%; height: 100%; display: block; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--ring);
+  border-radius: 8px; padding: 4px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  display: none; z-index: 2; }
+.tip b { font-weight: 650; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+select, button, input[type=range] { font: inherit; }
+select, button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--ring);
+  background: var(--page); color: var(--ink); }
+button { cursor: pointer; }
+button.primary { background: var(--series); color: #fff; border-color: transparent; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.events { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
+.events li { padding: 6px 0; border-top: 1px solid var(--grid); font-size: 13px; display: flex; gap: 8px; }
+.events time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.events .tag { flex: none; align-self: flex-start; font-size: 11px; font-weight: 650; padding: 0 6px; border-radius: 4px; color: #fff; }
+.tag.alarm { background: var(--critical); } .tag.clear { background: var(--good); }
+.tag.sim { background: var(--muted); }
+.note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-2); font-weight: 600; }
+.table-wrap { overflow-x: auto; }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Motor health</h1>
+    <span class="badge" id="conn"><span class="dot" id="conn-dot"></span><span id="conn-text">Connecting</span></span>
+    <span class="badge" id="source-badge">Source</span>
+    <span class="spacer"></span>
+    <div class="seg controls" id="range" role="group" aria-label="Time range">
+      <button data-min="5" aria-pressed="true">5 min</button>
+      <button data-min="15" aria-pressed="false">15 min</button>
+      <button data-min="60" aria-pressed="false">1 h</button>
+    </div>
+  </header>
+
+  <section class="grid top">
+    <div class="card">
+      <h2>Condition</h2>
+      <div class="state" id="state">
+        <div class="state-icon" id="state-icon" aria-hidden="true">?</div>
+        <div>
+          <div class="state-label" id="state-label">Waiting for data</div>
+          <div class="state-sub" id="state-sub"></div>
+        </div>
+      </div>
+      <ul class="why" id="why"></ul>
+      <p class="note" id="model-note"></p>
+    </div>
+    <div class="grid tiles" id="tiles"></div>
+  </section>
+
+  <section class="grid charts" id="charts"></section>
+
+  <section class="grid bottom">
+    <div class="card" id="sim-card">
+      <h2>Dummy motor controls</h2>
+      <div class="controls">
+        <label>Fault <select id="fault"></select></label>
+        <label>Severity <input type="range" id="sev" min="0.5" max="3" step="0.5" value="2"> <span id="sev-v">2</span></label>
+        <button class="primary" id="inject">Inject fault</button>
+        <button id="heal">Back to healthy</button>
+      </div>
+      <p class="note">These readings are generated, not measured. Inject a fault to see how the model and the alarm react.</p>
+    </div>
+    <div class="card">
+      <h2>Events</h2>
+      <ul class="events" id="events"></ul>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="chart-head"><h2>Latest readings</h2><button id="toggle-table">Show table</button></div>
+    <div class="table-wrap hidden" id="table-wrap"><table id="table"></table></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+let points = [], spectrum = null, status = null, rangeMin = 5;
+
+const TILES = [
+  { key: "rpm", label: "Speed", unit: "RPM", d: 0 },
+  { key: "current", label: "Current", unit: "A", d: 3 },
+  { key: "power", label: "Power", unit: "W", d: 1 },
+  { key: "motor_temp_c", label: "Motor temperature", unit: "°C", d: 1, sub: (p) => p.temp_rise_c != null ? `${p.temp_rise_c.toFixed(1)} °C above room` : "" },
+  { key: "vib_rms_mg", label: "Vibration", unit: "mg RMS", d: 1 },
+  { key: "sound_dbfs", label: "Sound", unit: "dBFS", d: 1 },
+];
+const CHARTS = [
+  { key: "anomaly_score", title: "Anomaly score", unit: "", d: 3, threshold: true },
+  { key: "vib_rms_mg", title: "Vibration (mg RMS)", unit: "mg", d: 1 },
+  { key: "current", title: "Current (A)", unit: "A", d: 3 },
+  { key: "temp_rise_c", title: "Temperature rise above room (°C)", unit: "°C", d: 2 },
+  { key: "rpm", title: "Speed (RPM)", unit: "RPM", d: 0 },
+  { key: "spectrum", title: "Vibration spectrum, latest window (mg)", unit: "mg", d: 2, spectrum: true },
+];
+
+// ---- tiles
+$("tiles").innerHTML = TILES.map(t => `<div class="card tile"><div class="k">${t.label}</div>
+  <div class="v"><span id="tv-${t.key}">-</span><span class="u">${t.unit}</span></div><div class="s" id="ts-${t.key}"></div></div>`).join("");
+
+// ---- charts: one series per chart, one y-axis, canvas with hover crosshair
+class LineChart {
+  constructor(spec) {
+    this.spec = spec;
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="chart-head"><h2>${spec.title}</h2><span class="now" id="now-${spec.key}"></span></div>
+      <div class="chart"><canvas aria-label="${spec.title} chart" role="img"></canvas><div class="tip"></div></div>`;
+    $("charts").appendChild(card);
+    this.canvas = card.querySelector("canvas");
+    this.tip = card.querySelector(".tip");
+    this.hover = null;
+    this.canvas.addEventListener("pointermove", (e) => { const r = this.canvas.getBoundingClientRect(); this.hover = e.clientX - r.left; this.draw(); });
+    this.canvas.addEventListener("pointerleave", () => { this.hover = null; this.tip.style.display = "none"; this.draw(); });
+  }
+  data() {
+    if (this.spec.spectrum) {
+      if (!spectrum) return [];
+      return spectrum.hz.map((x, i) => ({ x, y: spectrum.mg[i] }));
+    }
+    const cutoff = Date.now() - rangeMin * 60000;
+    return points.filter(p => p._ms >= cutoff && p[this.spec.key] != null)
+      .map(p => ({ x: p._ms, y: p[this.spec.key], flag: p.over_threshold, p }));
+  }
+  draw() {
+    const c = this.canvas, dpr = window.devicePixelRatio || 1;
+    const W = c.clientWidth, H = c.clientHeight;
+    if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+    const g = c.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const d = this.data(), s = this.spec;
+    const L = 48, R = 10, T = 8, B = 22, pw = W - L - R, ph = H - T - B;
+    g.font = "11px system-ui, sans-serif";
+    if (!d.length) { g.fillStyle = css("--muted"); g.fillText("No data yet", L, T + ph / 2); return; }
+
+    let x0, x1;
+    if (s.spectrum) { x0 = 0; x1 = d[d.length - 1].x; }
+    else { x1 = Date.now(); x0 = x1 - rangeMin * 60000; }
+    let ys = d.map(p => p.y);
+    const thr = s.threshold && status ? status.threshold : null;
+    if (thr != null) ys.push(thr);
+    let y0 = Math.min(...ys), y1 = Math.max(...ys);
+    if (s.spectrum || s.key === "vib_rms_mg") y0 = 0;
+    if (y1 === y0) { y1 += 1; y0 -= s.spectrum ? 0 : 1; }
+    const pad = (y1 - y0) * 0.08; y1 += pad; if (!(s.spectrum || s.key === "vib_rms_mg")) y0 -= pad;
+    const X = (v) => L + (v - x0) / (x1 - x0) * pw, Y = (v) => T + (1 - (v - y0) / (y1 - y0)) * ph;
+
+    // grid and y ticks
+    g.strokeStyle = css("--grid"); g.lineWidth = 1; g.fillStyle = css("--muted"); g.textAlign = "right"; g.textBaseline = "middle";
+    for (let i = 0; i <= 3; i++) {
+      const v = y0 + (y1 - y0) * i / 3, y = Math.round(Y(v)) + 0.5;
+      g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke();
+      g.fillText(fmt(v, s.d), L - 6, y);
+    }
+    // x ticks
+    g.textAlign = "center"; g.textBaseline = "top";
+    const nx = pw < 420 ? 2 : 4;
+    for (let i = 0; i <= nx; i++) {
+      const v = x0 + (x1 - x0) * i / nx;
+      g.fillText(s.spectrum ? `${Math.round(v)} Hz` : timeLabel(v), Math.min(Math.max(X(v), L + 16), W - R - 20), T + ph + 6);
+    }
+    // threshold reference line
+    if (thr != null) {
+      g.strokeStyle = css("--critical"); g.setLineDash([4, 4]); g.lineWidth = 1;
+      g.beginPath(); g.moveTo(L, Y(thr)); g.lineTo(W - R, Y(thr)); g.stroke(); g.setLineDash([]);
+      g.fillStyle = css("--ink-2"); g.textAlign = "left"; g.textBaseline = "bottom";
+      g.fillText("alarm threshold", L + 4, Y(thr) - 2);
+    }
+    // running-speed harmonics on the spectrum
+    if (s.spectrum) {
+      const last = points[points.length - 1];
+      if (last && last.rpm) {
+        g.textAlign = "center"; g.textBaseline = "top"; g.fillStyle = css("--muted");
+        [1, 2, 3].forEach(k => {
+          const f = last.rpm / 60 * k; if (f > x1) return;
+          g.strokeStyle = css("--axis"); g.setLineDash([2, 3]);
+          g.beginPath(); g.moveTo(X(f), T); g.lineTo(X(f), T + ph); g.stroke(); g.setLineDash([]);
+          g.fillText(`${k}x`, X(f), T);
+        });
+      }
+    }
+    // line (break on gaps longer than 10 s)
+    g.strokeStyle = css("--series"); g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+    d.forEach((p, i) => {
+      const gap = !s.spectrum && i > 0 && p.x - d[i - 1].x > 10000;
+      (i === 0 || gap) ? g.moveTo(X(p.x), Y(p.y)) : g.lineTo(X(p.x), Y(p.y));
+    });
+    g.stroke();
+    // windows over the threshold
+    if (s.threshold) {
+      d.forEach(p => { if (!p.flag) return;
+        g.beginPath(); g.arc(X(p.x), Y(p.y), 4, 0, 7); g.fillStyle = css("--critical"); g.fill();
+        g.lineWidth = 2; g.strokeStyle = css("--surface"); g.stroke(); });
+    }
+    // baseline
+    g.strokeStyle = css("--axis"); g.lineWidth = 1; g.beginPath(); g.moveTo(L, T + ph + 0.5); g.lineTo(W - R, T + ph + 0.5); g.stroke();
+
+    // hover
+    if (this.hover != null && this.hover >= L) {
+      const xv = x0 + (this.hover - L) / pw * (x1 - x0);
+      let best = d[0]; for (const p of d) if (Math.abs(p.x - xv) < Math.abs(best.x - xv)) best = p;
+      const hx = X(best.x), hy = Y(best.y);
+      g.strokeStyle = css("--axis"); g.beginPath(); g.moveTo(hx, T); g.lineTo(hx, T + ph); g.stroke();
+      g.beginPath(); g.arc(hx, hy, 4, 0, 7); g.fillStyle = css("--series"); g.fill(); g.lineWidth = 2; g.strokeStyle = css("--surface"); g.stroke();
+      const head = s.spectrum ? `${best.x} Hz` : timeLabel(best.x, true);
+      let extra = "";
+      if (s.threshold && best.p) extra = best.flag ? " · over threshold" : " · normal";
+      this.tip.innerHTML = `${head}<br><b>${fmt(best.y, s.d)} ${s.unit}</b>${extra}`;
+      this.tip.style.display = "block";
+      const tw = this.tip.offsetWidth;
+      this.tip.style.left = `${Math.min(Math.max(hx + 10, 0), W - tw)}px`;
+      this.tip.style.top = `${Math.max(hy - 44, 0)}px`;
+    }
+  }
+}
+const charts = CHARTS.map(s => new LineChart(s));
+
+function fmt(v, d) { return v == null || isNaN(v) ? "-" : Number(v).toFixed(d); }
+function timeLabel(ms, secs) {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(secs ? { second: "2-digit" } : {}) });
+}
+
+// ---- rendering
+function render() {
+  const p = points[points.length - 1];
+  if (p) {
+    TILES.forEach(t => { $(`tv-${t.key}`).textContent = fmt(p[t.key], t.d); $(`ts-${t.key}`).textContent = t.sub ? t.sub(p) : ""; });
+    CHARTS.forEach(s => { if (!s.spectrum) $(`now-${s.key}`).textContent = fmt(p[s.key], s.d); });
+    const st = p.alarm ? "alarm" : p.over_threshold ? "watch" : "normal";
+    $("state").className = `state ${st}`;
+    $("state-icon").textContent = { normal: "✓", watch: "!", alarm: "✕" }[st];
+    $("state-label").textContent = { normal: "Normal", watch: "Watch", alarm: "Anomaly" }[st];
+    $("state-sub").textContent = `Score ${fmt(p.anomaly_score, 3)} vs threshold ${fmt(p.threshold, 3)} · ${timeLabel(p._ms, true)}`
+      + (p.predicted_fault ? ` · looks like ${p.predicted_fault.replace(/_/g, " ")}` : "");
+    $("why").innerHTML = (st === "normal" ? "" : `<li><b>Most unusual readings</b><span class="z">vs healthy</span></li>`) +
+      (st === "normal" ? "" : p.top_deviations.slice(0, 3).map(d =>
+        `<li><span>${d.label}</span><span class="z">${d.z > 0 ? "+" : ""}${d.z} σ</span></li>`).join(""));
+  }
+  charts.forEach(c => c.draw());
+  renderTable();
+}
+
+function renderTable() {
+  if ($("table-wrap").classList.contains("hidden")) return;
+  const cols = [["Time", p => timeLabel(p._ms, true)], ["Score", p => fmt(p.anomaly_score, 3)], ["State", p => p.alarm ? "anomaly" : p.over_threshold ? "watch" : "normal"],
+    ["RPM", p => fmt(p.rpm, 0)], ["Current A", p => fmt(p.current, 3)], ["Power W", p => fmt(p.power, 1)],
+    ["Vib mg", p => fmt(p.vib_rms_mg, 1)], ["Temp °C", p => fmt(p.motor_temp_c, 1)], ["Sound dBFS", p => fmt(p.sound_dbfs, 1)]];
+  const rows = points.slice(-20).reverse();
+  $("table").innerHTML = `<tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr>` +
+    rows.map(p => `<tr>${cols.map(c => `<td>${c[1](p)}</td>`).join("")}</tr>`).join("");
+}
+
+function addEvent(e, prepend = true) {
+  if (!e) return;
+  const li = document.createElement("li");
+  li.innerHTML = `<time>${timeLabel(Date.parse(e.t), true)}</time><span class="tag ${e.kind}">${{ alarm: "ALARM", clear: "OK", sim: "DUMMY" }[e.kind]}</span><span></span>`;
+  li.lastChild.textContent = e.text;
+  prepend ? $("events").prepend(li) : $("events").appendChild(li);
+}
+
+function applyStatus(s) {
+  status = s;
+  const dummy = s.source === "sim";
+  $("source-badge").textContent = dummy ? "Dummy readings" : s.source === "replay" ? `Replay: ${s.replay_file.split(/[\\/]/).pop()}` : "Live sensor (MQTT)";
+  $("source-badge").className = "badge" + (dummy ? " dummy" : "");
+  $("sim-card").classList.toggle("hidden", !dummy);
+  $("model-note").textContent = `Model: ${s.model_path.split(/[\\/]/).pop()} (trained on ${s.model_source}). Alarm when ${s.alarm_rule} are over the threshold.`;
+  if (dummy && !$("fault").options.length) {
+    $("fault").innerHTML = s.sim.labels.filter(l => l !== "healthy").map(l => `<option value="${l}">${l.replace(/_/g, " ")}</option>`).join("");
+  }
+}
+
+const withMs = (p) => (p._ms = Date.parse(p.t), p);
+
+async function load() {
+  const r = await fetch("/api/history").then(r => r.json());
+  points = r.points.map(withMs); spectrum = r.spectrum; applyStatus(r.status);
+  $("events").innerHTML = ""; r.events.slice().reverse().forEach(e => addEvent(e, false));
+  render();
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => { $("conn-text").textContent = "Live"; $("conn-dot").style.background = css("--good"); load(); };
+  ws.onclose = () => { $("conn-text").textContent = "Reconnecting"; $("conn-dot").style.background = css("--critical"); setTimeout(connect, 2000); };
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.type === "point") {
+      points.push(withMs(msg.point)); if (points.length > 1800) points.shift();
+      spectrum = msg.spectrum;
+    } else if (msg.type === "status") applyStatus(msg.status);
+    addEvent(msg.event);
+    render();
+  };
+}
+
+// ---- controls
+document.querySelectorAll("#range button").forEach(b => b.onclick = () => {
+  rangeMin = +b.dataset.min;
+  document.querySelectorAll("#range button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  render();
+});
+$("sev").oninput = () => $("sev-v").textContent = $("sev").value;
+const setFault = (label, severity) => fetch("/api/sim/fault", { method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ label, severity }) });
+$("inject").onclick = () => setFault($("fault").value, +$("sev").value);
+$("heal").onclick = () => setFault("healthy", 0);
+$("toggle-table").onclick = () => {
+  const w = $("table-wrap"); w.classList.toggle("hidden");
+  $("toggle-table").textContent = w.classList.contains("hidden") ? "Show table" : "Hide table"; renderTable();
+};
+window.addEventListener("resize", () => charts.forEach(c => c.draw()));
+setInterval(() => charts.forEach(c => c.draw()), 5000);   // keep the time axis moving if data stops
+load().catch(() => {});
+connect();
+</script>
+</body>
+</html>
