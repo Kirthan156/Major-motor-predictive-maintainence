@@ -8,6 +8,7 @@ as results.
     python train.py --data ../data/synthetic
 """
 import argparse
+import base64
 import json
 from pathlib import Path
 
@@ -56,8 +57,31 @@ def burst(rng, label, sev, sess):
     y += rng.normal(0, noise, N)
     z += 1.0 + rng.normal(0, noise, N)                             # gravity on z
 
-    raw = lambda s: np.clip(np.round(s * LSB), -32768, 32767).astype(int).tolist()  # noqa: E731
-    return {"fs": FS, "lsb_per_g": LSB, "n": N, "x": raw(x), "y": raw(y), "z": raw(z)}, rot
+    # gyro: rocking motion, mostly from the accel components, in deg/s
+    gxs = 40 * (y - y.mean()) + rng.normal(0, 0.05, N)
+    gys = 40 * (x - x.mean()) + rng.normal(0, 0.05, N)
+    gzs = 15 * (x - x.mean()) * (y - y.mean()) + rng.normal(0, 0.05, N)
+    b64 = lambda s, k: base64.b64encode(np.clip(np.round(s * k), -32768, 32767).astype("<i2").tobytes()).decode()  # noqa: E731
+    return {"fs": FS, "lsb_per_g": LSB, "lsb_per_dps": 65.5, "n": N, "enc": "b64le16", "err": 0, "max_gap_us": 1010,
+            "x": b64(x, LSB), "y": b64(y, LSB), "z": b64(z, LSB),
+            "gx": b64(gxs, 65.5), "gy": b64(gys, 65.5), "gz": b64(gzs, 65.5)}, rot
+
+
+def audio(rng, label, sev, rot, level):
+    n, fs = 4096, 16000
+    t = np.arange(n) / fs
+    a = rng.normal(0, level, n)
+    for k in (1, 2, 3):
+        a += level * 2 / k * np.sin(2 * np.pi * k * 3 * rot * t + rng.uniform(0, 6))
+    a += level * 0.5 * np.sin(2 * np.pi * 100 * t)
+    if label == "air_blockage":
+        a += rng.normal(0, level * 0.4 * sev, n)
+        a += level * sev * np.sin(2 * np.pi * 900 * t)
+    if label == "loose_blade":
+        for start in range(0, n, int(fs / rot)):
+            a[start:start + 30] += level * 3 * sev * rng.normal(0, 1, min(30, n - start))
+    return {"fs": fs, "n": n, "enc": "b64le16",
+            "data": base64.b64encode(np.clip(np.round(a * 32768), -32768, 32767).astype("<i2").tobytes()).decode()}
 
 
 def session(rng, sid, label, sev, n_msgs):
@@ -72,7 +96,7 @@ def session(rng, sid, label, sev, n_msgs):
         cur += rng.normal(0, 0.002)
         warm = min(i / n_msgs, 1) * 4
         out.append({
-            "device_id": "synthetic", "fw": "v2", "seq": i, "uptime_ms": i * 2000,
+            "device_id": "synthetic", "fw": "v3", "seq": i, "uptime_ms": i * 2000,
             "ds18b20_temp_c": sess["amb"] + 6 + warm + rng.normal(0, 0.1),
             "dht22_temp_c": sess["amb"] + rng.normal(0, 0.1), "dht22_humidity": rng.uniform(40, 70),
             "rpm": rot * 60 + rng.normal(0, 5), "voltage": rng.normal(236, 2), "current": cur,
@@ -80,7 +104,10 @@ def session(rng, sid, label, sev, n_msgs):
             "energy": 0.0,
             "sound_dbfs": sess["snd"] + (1.5 * sev if label == "air_blockage" else 0)
                           + (0.8 * sev if label == "loose_blade" else 0) + rng.normal(0, 0.5),
-            "vib": vib,
+            "vib": vib, "audio": audio(rng, label, sev, rot, 10 ** (sess["snd"] / 20)),
+            "mpu_temp_c": sess["amb"] + 4 + rng.normal(0, 0.05),
+            "rpm_min": rot * 60 - 8, "rpm_max": rot * 60 + 8 + (20 * sev if label == "loose_blade" else 0),
+            "rpm_std": 3 + (5 * sev if label == "loose_blade" else 0) + rng.normal(0, 0.5), "rpm_pulses": 44,
             "session": sid, "label": label, "severity": sev, "notes": "SYNTHETIC",
             "received_at": f"synthetic-{i}",
         })

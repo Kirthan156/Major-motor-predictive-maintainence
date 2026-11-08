@@ -24,7 +24,9 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
-from features import extract
+from collections import deque
+
+from features import TEMPORAL_WINDOW, extract, temporal
 
 LABELS = ["healthy", "imbalance", "loose_blade", "foot_wedge", "one_sided_mount", "air_blockage"]
 
@@ -128,6 +130,7 @@ def main():
     tags = {"session": args.session, "label": args.label,
             "severity": args.severity if args.label else None}
     stats = {"n": 0, "no_vib": 0, "start": time.time()}
+    history = deque(maxlen=TEMPORAL_WINDOW)
 
     def on_connect(client, userdata, flags, reason_code, properties=None):
         if reason_code == 0:
@@ -153,7 +156,10 @@ def main():
         if feats is None:
             stats["no_vib"] += 1
             if stats["no_vib"] in (1, 10, 100):
-                print("Message has no vibration burst. Is the ESP32 running firmware v2?")
+                print("Message has no vibration burst (dropped on the ESP32, or old v1 firmware).")
+        else:
+            history.append(feats)
+            feats = {**feats, **temporal(list(history))}
         pred = predictor(feats) if (predictor and feats) else None
         if influx:
             try:
@@ -163,7 +169,7 @@ def main():
 
         line = f"#{stats['n']:4d}"
         if feats:
-            line += (f"  vib {feats['mag_rms_g']*1000:6.1f} mg  fs {feats['fs_hz']:6.1f} Hz"
+            line += (f"  vib {feats['amag_rms']*1000:6.1f} mg {feats['amag_vel_rms_mms']:5.2f} mm/s  {len(feats)} cols"
                      f"  1x {feats['rot_hz']:5.1f} Hz{'' if feats['rot_from_rpm'] else '(est)'}")
         fmt = lambda v, d: "--" if v is None else f"{v:.{d}f}"  # noqa: E731
         line += (f"  I {fmt(msg.get('current'), 3)} A  {fmt(msg.get('sound_dbfs'), 1)} dBFS"

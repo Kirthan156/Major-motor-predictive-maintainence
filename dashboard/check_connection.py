@@ -1,5 +1,7 @@
 """Check that real ESP32 readings reach this PC and look sane, before trusting the dashboard.
 
+Works with firmware v3 (build/firmware/motor_node_v3, raw bursts as base64).
+
     python check_connection.py              # listens for 30 s on the broker/topic from ../.env
     python check_connection.py --seconds 60 --broker 192.168.1.50
 
@@ -39,19 +41,22 @@ def check(msgs, seconds, bad_json):
 
     if not msgs:
         add("FAIL", "messages received", f"none in {seconds} s. Is the ESP32 powered and on the same Wi-Fi? "
-            "Is MQTT_BROKER in secrets.h this PC's current IPv4 (ipconfig)? Is Mosquitto running with "
+            "Is MQTT_BROKER at the top of motor_node_v3.ino this PC's current IPv4 (ipconfig)? Is Mosquitto running with "
             "'listener 1883 0.0.0.0' and 'allow_anonymous true'? Is port 1883 allowed in Windows Firewall?")
         return results
     rate = len(msgs) / seconds
     add("PASS" if rate > 0.3 else "WARN", "messages received",
-        f"{len(msgs)} in {seconds} s ({1 / rate:.1f} s apart; firmware v2 sends one every ~2 s)")
+        f"{len(msgs)} in {seconds} s ({1 / rate:.1f} s apart; firmware v3 sends one every ~2 s)")
     if bad_json:
         add("WARN", "valid JSON", f"{bad_json} messages were not valid JSON (cut off? check the payload size)")
 
     last = msgs[-1]
     missing = [k for k in REQUIRED if k not in last]
     add("FAIL" if missing else "PASS", "message fields",
-        f"missing {missing}. Flash firmware v2 (firmware/motor_node_v2)" if missing else "all expected fields present")
+        f"missing {missing}. Flash firmware v3 (firmware/motor_node_v3)" if missing else "all expected fields present")
+    fw = last.get("fw")
+    add("PASS" if fw == "v3" else "WARN", "firmware version", f"fw={fw!r}" + ("" if fw == "v3" else
+        ". The models were trained on v3 messages; flash firmware/motor_node_v3"))
 
     vib = [m.get("vib") for m in msgs if m.get("vib")]
     if not vib:
@@ -59,12 +64,24 @@ def check(msgs, seconds, bad_json):
             "(SDA/SCL) and the Serial Monitor. Without vibration the model cannot run.")
     else:
         fs = num(vib[-1].get("fs")) or 0
-        n = len(vib[-1].get("x", []))
+        xs = features._decode(vib[-1].get("x"))
+        n = 0 if xs is None else len(xs)
+        lsb = num(vib[-1].get("lsb_per_g")) or 0
+        add("PASS" if lsb == 4096 else "WARN", "accelerometer range",
+            "+/-8 g (lsb_per_g 4096)" if lsb == 4096 else f"lsb_per_g {lsb:g}: the rig clipped at +/-4 g; re-flash v3 (+/-8 g)")
+        if xs is not None and lsb:
+            clip = float((abs(xs) >= 32700).mean())
+            if clip > 0:
+                add("WARN", "clipping", f"{clip:.1%} of accelerometer samples are at full scale")
+        has_audio = sum(1 for m in msgs if (m.get("audio") or {}).get("data"))
+        add("PASS" if has_audio else "WARN", "raw audio (INMP441)",
+            f"{has_audio}/{len(msgs)} messages carry the 4096-sample audio clip" if has_audio
+            else "no raw audio in the messages (audio features will be missing)")
         add("PASS" if 900 <= fs <= 1100 and n >= 512 else "WARN", "vibration burst",
             f"{n} samples at {fs:.0f} Hz (expect 1024 at ~1000 Hz); {len(vib)}/{len(msgs)} messages have it")
         try:
             f = features.extract(next(m for m in msgs if m.get("vib")))
-            add("PASS", "feature extraction", f"{len(f)} features, vibration {f['mag_rms_g'] * 1000:.1f} mg RMS, "
+            add("PASS", "feature extraction", f"{len(f)} features, vibration {f['amag_rms'] * 1000:.1f} mg RMS ({f['amag_vel_rms_mms']:.1f} mm/s), "
                 f"running speed {f['rot_hz']:.1f} Hz ({'from RPM sensor' if f['rot_from_rpm'] else 'estimated from vibration'})")
         except Exception as e:   # noqa: BLE001
             add("FAIL", "feature extraction", f"{type(e).__name__}: {e}")
@@ -76,8 +93,8 @@ def check(msgs, seconds, bad_json):
     if not cur:
         add("WARN", "current (PZEM)", "no readings: PZEM not answering (check RX/TX and its 230 V supply)")
     elif max(cur) < 0.1:
-        add("WARN", "current (PZEM)", f"max {max(cur):.3f} A; a 60 W fan should draw ~0.26 A. See 'PZEM current' "
-            "in docs/recording-and-training.md. The model still runs, but current features are useless.")
+        add("WARN", "current (PZEM)", f"max {max(cur):.3f} A; the rig drew ~0.18-0.24 A on 7 Nov. Check the 18 turns "
+            "through the ring (live wire only, same direction). The model still runs, but current features are useless.")
     else:
         add("PASS", "current (PZEM)", f"{sum(cur) / len(cur):.3f} A average")
 
@@ -94,7 +111,7 @@ def check(msgs, seconds, bad_json):
         add("WARN", "sound (INMP441)", "no readings")
     elif max(snd) > 0:
         add("WARN", "sound (INMP441)", f"{max(snd):.0f} is not a dBFS value (must be below 0). "
-            "Old v1 firmware sends the raw level; flash v2")
+            "Old v1 firmware sends the raw level; flash v3")
     elif max(snd) - min(snd) < 0.05 and len(snd) > 3:
         add("WARN", "sound (INMP441)", f"stuck at {snd[0]:.1f} dBFS: check the I2S wiring")
     else:

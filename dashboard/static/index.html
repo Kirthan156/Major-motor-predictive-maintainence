@@ -85,7 +85,7 @@ button.primary { background: var(--series); color: #fff; border-color: transpare
 .events time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 .events .tag { flex: none; align-self: flex-start; font-size: 11px; font-weight: 650; padding: 0 6px; border-radius: 4px; color: #fff; }
 .tag.alarm { background: var(--critical); } .tag.clear { background: var(--good); }
-.tag.sim { background: var(--muted); }
+.tag.sim, .tag.info { background: var(--muted); }
 .note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 th, td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--grid); white-space: nowrap; }
@@ -120,7 +120,9 @@ th { color: var(--ink-2); font-weight: 600; }
         </div>
       </div>
       <ul class="why" id="why"></ul>
+      <p class="note" id="speed-note" style="color: var(--ink)"></p>
       <p class="note" id="model-note"></p>
+      <div class="controls"><button id="relearn" title="Use the next readings as the new healthy reference">Re-learn baseline</button></div>
     </div>
     <div class="grid tiles" id="tiles"></div>
   </section>
@@ -129,14 +131,14 @@ th { color: var(--ink-2); font-weight: 600; }
 
   <section class="grid bottom">
     <div class="card" id="sim-card">
-      <h2>Dummy motor controls</h2>
+      <h2>Demo motor controls</h2>
       <div class="controls">
         <label>Fault <select id="fault"></select></label>
         <label>Severity <input type="range" id="sev" min="0.5" max="3" step="0.5" value="2"> <span id="sev-v">2</span></label>
         <button class="primary" id="inject">Inject fault</button>
         <button id="heal">Back to healthy</button>
       </div>
-      <p class="note">These readings are generated, not measured. Inject a fault to see how the model and the alarm react.</p>
+      <p class="note" id="sim-note">Demo mode. Inject a fault to see how the model and the alarm react. Injected faults are simulated, not measured.</p>
     </div>
     <div class="card">
       <h2>Events</h2>
@@ -160,15 +162,15 @@ const TILES = [
   { key: "current", label: "Current", unit: "A", d: 3 },
   { key: "power", label: "Power", unit: "W", d: 1 },
   { key: "motor_temp_c", label: "Motor temperature", unit: "°C", d: 1, sub: (p) => p.temp_rise_c != null ? `${p.temp_rise_c.toFixed(1)} °C above room` : "" },
-  { key: "vib_rms_mg", label: "Vibration", unit: "mg RMS", d: 1 },
+  { key: "vel_rms_mms", label: "Vibration", unit: "mm/s RMS", d: 1, sub: (p) => p.vib_rms_mg != null ? `${p.vib_rms_mg.toFixed(0)} mg acceleration RMS` : "" },
   { key: "sound_dbfs", label: "Sound", unit: "dBFS", d: 1 },
 ];
 const CHARTS = [
-  { key: "anomaly_score", title: "Anomaly score", unit: "", d: 3, threshold: true },
+  { key: "anomaly_score", title: "Model anomaly score (vs all healthy recordings)", unit: "", d: 3, threshold: "threshold", flag: "over_threshold" },
+  { key: "change_score", title: "Change since baseline (start of this run)", unit: "", d: 2, threshold: "change_threshold", flag: "change_over" },
   { key: "vib_rms_mg", title: "Vibration (mg RMS)", unit: "mg", d: 1 },
   { key: "current", title: "Current (A)", unit: "A", d: 3 },
   { key: "temp_rise_c", title: "Temperature rise above room (°C)", unit: "°C", d: 2 },
-  { key: "rpm", title: "Speed (RPM)", unit: "RPM", d: 0 },
   { key: "spectrum", title: "Vibration spectrum, latest window (mg)", unit: "mg", d: 2, spectrum: true },
 ];
 
@@ -198,7 +200,7 @@ class LineChart {
     }
     const cutoff = Date.now() - rangeMin * 60000;
     return points.filter(p => p._ms >= cutoff && p[this.spec.key] != null)
-      .map(p => ({ x: p._ms, y: p[this.spec.key], flag: p.over_threshold, p }));
+      .map(p => ({ x: p._ms, y: p[this.spec.key], flag: this.spec.flag ? p[this.spec.flag] : false, p }));
   }
   draw() {
     const c = this.canvas, dpr = window.devicePixelRatio || 1;
@@ -216,7 +218,7 @@ class LineChart {
     if (s.spectrum) { x0 = 0; x1 = d[d.length - 1].x; }
     else { x1 = Date.now(); x0 = x1 - rangeMin * 60000; }
     let ys = d.map(p => p.y);
-    const thr = s.threshold && status ? status.threshold : null;
+    const thr = s.threshold && status ? status[s.threshold] : null;
     if (thr != null) ys.push(thr);
     let y0 = Math.min(...ys), y1 = Math.max(...ys);
     if (s.spectrum || s.key === "vib_rms_mg") y0 = 0;
@@ -305,15 +307,19 @@ function render() {
   if (p) {
     TILES.forEach(t => { $(`tv-${t.key}`).textContent = fmt(p[t.key], t.d); $(`ts-${t.key}`).textContent = t.sub ? t.sub(p) : ""; });
     CHARTS.forEach(s => { if (!s.spectrum) $(`now-${s.key}`).textContent = fmt(p[s.key], s.d); });
-    const st = p.alarm ? "alarm" : p.over_threshold ? "watch" : "normal";
+    const st = p.alarm ? "alarm" : (p.over_threshold || p.change_over) ? "watch" : "normal";
     $("state").className = `state ${st}`;
     $("state-icon").textContent = { normal: "✓", watch: "!", alarm: "✕" }[st];
     $("state-label").textContent = { normal: "Normal", watch: "Watch", alarm: "Anomaly" }[st];
-    $("state-sub").textContent = `Score ${fmt(p.anomaly_score, 3)} vs threshold ${fmt(p.threshold, 3)} · ${timeLabel(p._ms, true)}`
-      + (p.predicted_fault ? ` · looks like ${p.predicted_fault.replace(/_/g, " ")}` : "");
-    $("why").innerHTML = (st === "normal" ? "" : `<li><b>Most unusual readings</b><span class="z">vs healthy</span></li>`) +
-      (st === "normal" ? "" : p.top_deviations.slice(0, 3).map(d =>
-        `<li><span>${d.label}</span><span class="z">${d.z > 0 ? "+" : ""}${d.z} σ</span></li>`).join(""));
+    const ch = p.change_score != null ? ` · change ${fmt(p.change_score, 1)} / ${fmt(p.change_threshold, 1)}` : (p.change_state ? ` · baseline ${p.change_state}` : "");
+    $("state-sub").textContent = `Model ${fmt(p.anomaly_score, 3)} / ${fmt(p.threshold, 3)}${ch} · ${timeLabel(p._ms, true)}`
+      + (p.predicted_fault ? ` · looks like ${p.predicted_fault.replace(/_/g, " ")}${p.fault_confidence != null ? ` (${Math.round(p.fault_confidence * 100)}%)` : ""}` : "");
+    const useChange = (p.change_alarm || p.change_over) && p.change_deviations && p.change_deviations.length;
+    const devs = useChange ? p.change_deviations : (p.top_deviations || []);
+    $("speed-note").textContent = p.speed_changed ? `Speed is ${fmt(p.rpm, 0)} RPM but the baseline was learned at ${fmt(p.baseline_rpm, 0)} RPM. If you changed the regulator, press Re-learn baseline.` : "";
+    $("why").innerHTML = (st === "normal" || !devs.length ? "" : `<li><b>Most unusual readings</b><span class="z">${useChange ? "vs baseline" : "vs healthy"}</span></li>`) +
+      (st === "normal" ? "" : devs.slice(0, 3).map(d =>
+        `<li><span>${d.label}</span><span class="z">${Math.abs(d.z) >= 10 ? (d.z > 0 ? "≥ +10" : "≤ -10") : (d.z > 0 ? "+" : "") + d.z} σ</span></li>`).join(""));
   }
   charts.forEach(c => c.draw());
   renderTable();
@@ -321,9 +327,9 @@ function render() {
 
 function renderTable() {
   if ($("table-wrap").classList.contains("hidden")) return;
-  const cols = [["Time", p => timeLabel(p._ms, true)], ["Score", p => fmt(p.anomaly_score, 3)], ["State", p => p.alarm ? "anomaly" : p.over_threshold ? "watch" : "normal"],
+  const cols = [["Time", p => timeLabel(p._ms, true)], ["Score", p => fmt(p.anomaly_score, 3)], ["Change", p => fmt(p.change_score, 1)], ["State", p => p.alarm ? "anomaly" : (p.over_threshold || p.change_over) ? "watch" : "normal"],
     ["RPM", p => fmt(p.rpm, 0)], ["Current A", p => fmt(p.current, 3)], ["Power W", p => fmt(p.power, 1)],
-    ["Vib mg", p => fmt(p.vib_rms_mg, 1)], ["Temp °C", p => fmt(p.motor_temp_c, 1)], ["Sound dBFS", p => fmt(p.sound_dbfs, 1)]];
+    ["Vib mm/s", p => fmt(p.vel_rms_mms, 1)], ["Vib mg", p => fmt(p.vib_rms_mg, 0)], ["Temp °C", p => fmt(p.motor_temp_c, 1)], ["Sound dBFS", p => fmt(p.sound_dbfs, 1)]];
   const rows = points.slice(-20).reverse();
   $("table").innerHTML = `<tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr>` +
     rows.map(p => `<tr>${cols.map(c => `<td>${c[1](p)}</td>`).join("")}</tr>`).join("");
@@ -332,7 +338,7 @@ function renderTable() {
 function addEvent(e, prepend = true) {
   if (!e) return;
   const li = document.createElement("li");
-  li.innerHTML = `<time>${timeLabel(Date.parse(e.t), true)}</time><span class="tag ${e.kind}">${{ alarm: "ALARM", clear: "OK", sim: "DUMMY" }[e.kind]}</span><span></span>`;
+  li.innerHTML = `<time>${timeLabel(Date.parse(e.t), true)}</time><span class="tag ${e.kind}">${{ alarm: "ALARM", clear: "OK", sim: "DEMO", info: "INFO" }[e.kind] || e.kind}</span><span></span>`;
   li.lastChild.textContent = e.text;
   prepend ? $("events").prepend(li) : $("events").appendChild(li);
 }
@@ -340,10 +346,14 @@ function addEvent(e, prepend = true) {
 function applyStatus(s) {
   status = s;
   const dummy = s.source === "sim";
-  $("source-badge").textContent = dummy ? "Dummy readings" : s.source === "replay" ? `Replay: ${s.replay_file.split(/[\\/]/).pop()}` : "Live sensor (MQTT)";
+  $("source-badge").textContent = dummy ? (s.sim && s.sim.kind === "recorded" ? "Demo: recorded data" : "Demo: synthetic data")
+    : s.source === "replay" ? `Replay: ${s.replay_file.split(/[\\/]/).pop()}` : `Live sensor (MQTT ${s.mqtt})`;
   $("source-badge").className = "badge" + (dummy ? " dummy" : "");
   $("sim-card").classList.toggle("hidden", !dummy);
-  $("model-note").textContent = `Model: ${s.model_path.split(/[\\/]/).pop()} (trained on ${s.model_source}). Alarm when ${s.alarm_rule} are over the threshold.`;
+  $("model-note").textContent = `Model: ${s.model_name} (${s.model_path.split(/[\\/]/).pop()}, trained on ${s.model_source})`
+    + (s.classifier ? `, fault classifier ${s.classifier.split(/[\\/]/).pop()}` : "")
+    + `. Alarm when ${s.alarm_rule} are over a threshold.` + (s.change_enabled ? ` Baseline: ${s.change_state}.` : "");
+  $("relearn").classList.toggle("hidden", !s.change_enabled);
   if (dummy && !$("fault").options.length) {
     $("fault").innerHTML = s.sim.labels.filter(l => l !== "healthy").map(l => `<option value="${l}">${l.replace(/_/g, " ")}</option>`).join("");
   }
@@ -367,6 +377,7 @@ function connect() {
     if (msg.type === "point") {
       points.push(withMs(msg.point)); if (points.length > 1800) points.shift();
       spectrum = msg.spectrum;
+      if (msg.status) applyStatus(msg.status);
     } else if (msg.type === "status") applyStatus(msg.status);
     addEvent(msg.event);
     render();
@@ -384,6 +395,15 @@ const setFault = (label, severity) => fetch("/api/sim/fault", { method: "POST", 
   body: JSON.stringify({ label, severity }) });
 $("inject").onclick = () => setFault($("fault").value, +$("sev").value);
 $("heal").onclick = () => setFault("healthy", 0);
+$("relearn").onclick = () => fetch("/api/baseline/reset", { method: "POST" });
+// warn when readings stop arriving (ESP32 off, Wi-Fi down, broker stopped)
+setInterval(() => {
+  const p = points[points.length - 1];
+  if (!p || $("conn-text").textContent === "Reconnecting") return;
+  const age = (Date.now() - p._ms) / 1000;
+  $("conn-text").textContent = age > 10 ? `No new reading for ${Math.round(age)} s` : "Live";
+  $("conn-dot").style.background = css(age > 10 ? "--warning" : "--good");
+}, 2000);
 $("toggle-table").onclick = () => {
   const w = $("table-wrap"); w.classList.toggle("hidden");
   $("toggle-table").textContent = w.classList.contains("hidden") ? "Show table" : "Hide table"; renderTable();
