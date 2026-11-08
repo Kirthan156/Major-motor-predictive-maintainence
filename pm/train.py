@@ -104,12 +104,16 @@ def anomaly(df, X, models, reports):
         te = df["session"] == s
         scores[te] = -m.score_samples(X[te])
     final = fit(X[healthy])
-    train_scores = -final.score_samples(X[healthy])
-    threshold = float(np.percentile(train_scores, 99))
-    scores[~healthy] = -final.score_samples(X[~healthy])
+    # Threshold from healthy sessions the model did NOT see (scores above), not from its own
+    # training rows: training-row scores are optimistic and give false alarms on a new run.
+    threshold = float(np.percentile(scores[healthy].dropna(), 99))
+    if (~healthy).any():
+        scores[~healthy] = -final.score_samples(X[~healthy])
 
     y = (~healthy).astype(int)
-    res = {"roc_auc": roc_auc_score(y, scores), "pr_auc": average_precision_score(y, scores),
+    both = y.nunique() == 2
+    res = {"roc_auc": roc_auc_score(y, scores) if both else float("nan"),
+           "pr_auc": average_precision_score(y, scores) if both else float("nan"),
            "threshold_p99_healthy": threshold,
            "false_alarm_rate_heldout_healthy": float((scores[healthy] > threshold).mean()),
            "detection_rate_by_label_severity": {}}
@@ -117,8 +121,9 @@ def anomaly(df, X, models, reports):
         res["detection_rate_by_label_severity"][f"{lab}/{sev}"] = float((scores[idx] > threshold).mean())
     pd.DataFrame({"session": df["session"], "label": df["label"], "severity": df["severity"],
                   "anomaly_score": scores}).to_csv(reports / "anomaly_scores.csv", index=False)
-    joblib.dump({"model": final, "features": list(X.columns), "threshold": threshold},
-                models / "anomaly_iforest.joblib")
+    joblib.dump({"kind": "anomaly", "name": "Isolation Forest (train.py)", "model": final,
+                 "features": list(X.columns), "threshold": threshold,
+                 "source": f"{len(h_sessions)} healthy sessions"}, models / "anomaly_iforest.joblib")
     print(f"\n[isolation forest, healthy-only] ROC-AUC {res['roc_auc']:.3f}  PR-AUC {res['pr_auc']:.3f}"
           f"  false alarms on unseen healthy {res['false_alarm_rate_heldout_healthy']:.1%}")
     for k, v in res["detection_rate_by_label_severity"].items():

@@ -1,91 +1,120 @@
 # Motor predictive maintenance
 
-Live condition monitoring for a 230 V, 60 W table-fan motor. An ESP32-S3 sensor node sends vibration,
-current, speed, temperature and sound readings every 2 s. A Python service turns each reading into
-features and scores it with an anomaly model. A web dashboard shows the readings and the alarm live,
-on a PC or a phone.
+Live condition monitoring for a 230 V, 60 W ceiling-fan motor. An ESP32-S3 sensor node sends
+vibration, rotation, current, speed, temperature and sound every 2 s. A Python service turns each
+message into ~450 features, scores it with an anomaly model, and a web dashboard shows the readings
+and the alarm live, on a PC or a phone.
 
 ![Dashboard](docs/dashboard.png)
 
-Until real data is recorded, the dashboard runs on a **dummy motor** that sends messages in exactly
-the firmware's format. You can inject faults from the page. Switching to the real motor is one setting.
-
 ```
-ESP32-S3 + sensors ──MQTT──> Mosquitto ──> dashboard/server.py ──WebSocket──> browser (PC / phone)
- (firmware/motor_node_v2)    (this PC)  └─> pm/recorder.py ──> data/raw/*.jsonl ──> pm/train.py ──> models/
+ ESP32-S3 + sensors         Wi-Fi / MQTT            this PC
+ (firmware/motor_node_v3) ───────────────▶ Mosquitto :1883 ──┬──▶ dashboard/server.py ──WebSocket──▶ browser (PC / phone)
+  MPU6050 1 kHz bursts       topic                           │      features → model → alarm
+  INMP441 16 kHz audio       motor/sensors                   │
+  TCRT5000, PZEM-004T,       one ~28 KB JSON                 └──▶ pm/recorder.py ──▶ data/raw/<session>.jsonl ──▶ pm/train.py ──▶ models/
+  DS18B20, DHT22             message / 2 s                          (labels)     └──▶ InfluxDB (optional)
 ```
 
-| Folder | What it is |
+The full data path, message format and every setting are in **[docs/DATA_PATH.md](docs/DATA_PATH.md)**.
+How to plug in a new model: **[docs/MODEL_INTERFACE.md](docs/MODEL_INTERFACE.md)**.
+
+| Folder / file | What it is |
 |---|---|
-| `firmware/motor_node_v2/` | ESP32-S3 sketch: 1 kHz vibration bursts + slow sensors, published to `motor/sensors` |
-| `pm/` | `recorder.py` (record labelled sessions), `features.py`, `train.py` (fault classifier + anomaly model), `synthetic.py` |
-| `dashboard/` | `server.py` (live dashboard), `check_connection.py` (tests the real data path), dummy motor, dummy model |
-| `data/raw/` | recorded sessions, one `.jsonl` file per session (not pushed to GitHub) |
-| `models/`, `reports/` | outputs of `pm/train.py` |
-| `docs/recording-and-training.md` | how to record good data, train, evaluate, and fix the PZEM |
+| `firmware/motor_node_v3/` | ESP32-S3 sketch in use (v3: accel + gyro bursts at 1 kHz, raw audio, RPM ripple, PZEM). `motor_node_v2/` is the old one. |
+| `pm/features.py` | turns one message into ~420 features (+ 34 trend features); the SAME code runs in training and live |
+| `pm/recorder.py` | records labelled sessions to `data/raw/*.jsonl`, writes InfluxDB, optional live prediction |
+| `pm/dataset.py`, `pm/train.py` | feature table from all sessions; Random Forest, XGBoost, Isolation Forest with leave-one-session-out evaluation |
+| `dashboard/server.py` | the live dashboard (sources: demo motor, real MQTT, replay of a recording) |
+| `dashboard/train_baseline.py` | trains the dashboard's baseline anomaly model on healthy sessions |
+| `dashboard/check_connection.py` | checks that the ESP32's messages reach the PC and look right |
+| `dashboard/publish_recording.py` | pretends to be the ESP32 (publishes a recording) to test without the rig |
+| `dashboard/selftest.py` | offline test of features → model → alarm |
+| `models/` | trained models. `anomaly_baseline.joblib` + `healthy_reference.json` come trained on the 10 healthy sessions of 7 Nov 2026 |
+| `data/sample/` | two real recordings (s01 speed 1, s07 speed 3) for the demo and tests |
 
-Commands below are for Windows (PowerShell or cmd). On Linux/macOS use `source venv/bin/activate`,
+Commands are for **Windows** (cmd or PowerShell). On Linux/macOS use `source venv/bin/activate`,
 `cp` instead of `copy`, and `/` in paths.
 
 ---
 
-## Step 1. Install (once)
+## Step 1. Install (once, ~10 minutes)
 
-Python 3.10 or newer.
+Python 3.10 to 3.13.
 
 ```
-git clone https://github.com/Kirthan156/Major-motor-predictive-maintainence.git
-cd Major-motor-predictive-maintainence
+git clone https://github.com/kirthan156/major-motor-predictive-maintainence.git
+cd major-motor-predictive-maintainence
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-All settings (broker address, data source, model) live in `.env`. Every setting can also be passed
-as a command-line flag, and the flag wins.
+All settings (broker address, data source, model) live in `.env`. Every setting can also be given as a
+command-line flag; the flag wins.
 
-## Step 2. Run the dashboard on dummy data
+Then check the PC side works, with no hardware:
+
+```
+cd dashboard
+python selftest.py
+```
+
+Every line should say PASS. If `model loads` fails with a scikit-learn version error, rebuild the model
+from your recordings: put the 10 sessions of 7 Nov (`s01_sp1.jsonl` ... `s14_sp1.jsonl`) in `data\raw\`
+and run `python train_baseline.py` (30 s).
+
+## Step 2. See the dashboard on the demo motor
 
 ```
 cd dashboard
 python server.py
 ```
 
-Open http://localhost:8000. The first start trains the dummy anomaly model (about 10 s).
+Open http://localhost:8000.
 
-- The **Dummy readings** badge means nothing is measured.
-- Under **Dummy motor controls**, pick a fault (imbalance, loose blade, foot wedge, one-sided mount,
-  air blockage) and a severity, then press **Inject fault**. The anomaly score crosses the threshold,
-  the status goes to **Anomaly**, and *Most unusual readings* names what changed.
-- Phone: connect it to the same Wi-Fi and open `http://<this PC's IPv4>:8000`. Run `ipconfig` to
-  find the IPv4, and allow Python through Windows Firewall when asked.
-- `python server.py --interval 0.5` speeds the dummy feed up for a demo.
+- The badge **Demo: recorded data** means the readings are real recordings from the rig, played in a loop.
+- Wait 1 minute while the baseline is learned (the subtitle says `baseline learning 12/30`).
+- Under **Demo motor controls** pick a fault and a severity and press **Inject fault**. The change score
+  crosses its threshold within a few readings, the state goes **Watch** then **Anomaly**, and
+  *Most unusual readings* names what changed. **Back to healthy** returns it to normal.
+- The injected faults are simulated changes on top of real data. They show how the dashboard reacts;
+  they are not results. Never report detection numbers from them.
+- Phone: connect it to the same Wi-Fi and open `http://<this PC's IPv4>:8000` (`ipconfig` shows the
+  IPv4). Allow Python through Windows Firewall when asked.
 
 ## Step 3. Connect the real motor
 
 ### 3a. Start the MQTT broker (Mosquitto)
 
-Install Mosquitto from https://mosquitto.org/download/. Create `mosquitto.conf` with:
+Install Mosquitto from https://mosquitto.org/download/. Create `C:\mosquitto\mosquitto.conf`:
 
 ```
 listener 1883 0.0.0.0
 allow_anonymous true
 ```
 
-Then run it: `"C:\Program Files\mosquitto\mosquitto.exe" -c mosquitto.conf -v`. In Windows Defender
-Firewall, allow inbound TCP port 1883 on Private networks, or the ESP32 cannot reach it.
+Run it in its own window and leave it open:
 
-### 3b. Flash the firmware
+```
+"C:\Program Files\mosquitto\mosquitto.exe" -c C:\mosquitto\mosquitto.conf -v
+```
 
-1. Copy `firmware/motor_node_v2/secrets.h.example` to `secrets.h` in the same folder. Fill in your
-   Wi-Fi name and password, and set `MQTT_BROKER` to this PC's IPv4 from `ipconfig`.
-   `secrets.h` is git-ignored, so the password is never pushed.
-2. Arduino IDE board settings: **ESP32S3 Dev Module**, USB CDC On Boot **Enabled**, PSRAM **Disabled**.
-3. Upload. The Serial Monitor (115200) should print a line every 2 s like
-   `Published #12: 16384 bytes, vib fs=999.8 Hz rms=25 mg, I=0.2700 A, -52.0 dBFS, 1310 RPM`.
+In Windows Defender Firewall, allow inbound **TCP 1883** on Private networks, or the ESP32 cannot reach it.
+(If you installed Mosquitto as a service instead, `net start mosquitto` works, but the service ignores
+your config and only listens on localhost unless you edit `C:\Program Files\mosquitto\mosquitto.conf`.)
 
-The PC's IPv4 can change after a restart. If messages stop, check `ipconfig` again and re-flash.
+### 3b. Flash firmware v3
+
+1. Open `firmware/motor_node_v3/motor_node_v3.ino` in Arduino IDE.
+2. Lines 34-36: your Wi-Fi name, password, and this PC's IPv4 (`ipconfig`) as `MQTT_BROKER`.
+   Blank them again before you share the file.
+3. Board **ESP32S3 Dev Module**, USB CDC On Boot **Enabled**, PSRAM **Disabled**. Libraries:
+   MPU6050_light, OneWire, DallasTemperature, DHT sensor library, Adafruit SSD1306 + GFX, PZEM004Tv30, PubSubClient.
+4. Upload. Serial Monitor (115200) prints a `Published #...` line every ~2 s and the OLED says `Sending ok`.
+
+The PC's IPv4 can change after a restart or on another Wi-Fi. If messages stop, check `ipconfig` and re-flash.
 
 ### 3c. Check the connection
 
@@ -96,110 +125,127 @@ cd dashboard
 python check_connection.py
 ```
 
-It listens for 30 s and prints PASS / WARN / FAIL for: broker reachable, messages arriving, message
-fields, vibration burst (1024 samples at about 1 kHz), feature extraction, current, RPM, sound and
-temperatures. Each WARN or FAIL line says what to fix. Fix every FAIL before going on. The model
-works with WARNs, but those sensors add nothing.
+It listens for 30 s and prints PASS / WARN / FAIL for: broker, messages arriving, fields, firmware
+version, ±8 g range, clipping, vibration burst (1024 samples at ~1 kHz), raw audio, feature extraction,
+current, RPM, sound and temperatures. Fix every FAIL before going on.
+
+No rig at hand? Test the same path with a recording standing in for the ESP32 (two terminals):
+
+```
+python publish_recording.py ..\data\sample\s01_sp1.jsonl
+python check_connection.py
+```
 
 ### 3d. Show live data
 
-In `.env` set `DASHBOARD_SOURCE=mqtt`, or run:
-
 ```
+cd dashboard
 python server.py --source mqtt
 ```
 
-The badge now says **Live sensor (MQTT)**. The dashboard and `pm/recorder.py` can run at the same
-time, because both just subscribe to the topic.
+(or set `DASHBOARD_SOURCE=mqtt` in `.env`). The badge says **Live sensor (MQTT connected)**.
 
-> **At this point the model is still the dummy one.** It has never seen your fan, so its alarms
-> mean nothing yet. Steps 4 and 5 fix that.
+- Keep the motor healthy and at a fixed speed for the first minute: that is the baseline.
+- After moving the speed regulator, press **Re-learn baseline** (the page reminds you when the speed
+  differs from the baseline by more than 2 %).
+- `pm/recorder.py` can run at the same time on the same broker (recording sessions or filling InfluxDB),
+  because both just subscribe to `motor/sensors`.
+- `--save-raw` also saves every message the dashboard receives to `data/raw/live_<time>.jsonl`.
+- Every scored reading is logged to `dashboard/data/live_<time>.csv`.
 
-## Step 4. Record real data
+## Step 4. Record more data
 
-Each session is one physical setup, recorded for 3 to 5 minutes. Let the fan run about 2 minutes first.
+How to record sessions (labels, speeds, durations) is in [docs/recording-and-training.md](docs/recording-and-training.md).
+The command is one line per run:
 
 ```
 cd pm
-python recorder.py --session s01_healthy --label healthy --minutes 5 --no-influx
-python recorder.py --session s02_imb1 --label imbalance --severity 1 --minutes 5 --no-influx --notes "1 coin taped to blade tip"
+python recorder.py --session s15_sp1 --label healthy --minutes 5 --notes "speed 1, day 2" --no-influx
 ```
 
-Labels: `healthy, imbalance, loose_blade, foot_wedge, one_sided_mount, air_blockage`, with severity 1 to 3
-for faults. Drop `--no-influx` if InfluxDB is running and its token is in `.env`.
-Sessions are saved to `data/raw/<session>.jsonl`.
-
-**The anomaly model only needs healthy data.** Record at least 6 healthy sessions on different
-days or after remounting the fan. Fault sessions are for the classifier and for measuring how well
-the alarm works. The full recording plan is in [docs/recording-and-training.md](docs/recording-and-training.md).
-
-To check a recording on the dashboard, replay it as if it were live:
+Drop `--no-influx` when InfluxDB is running and its token is in `.env`. Sessions are saved to
+`data/raw/<session>.jsonl`. To look at a recording on the dashboard:
 
 ```
 cd dashboard
-python server.py --source replay --file ..\data\raw\s02_imb1.jsonl
+python server.py --source replay --file ..\data\raw\s15_sp1.jsonl --interval 0.5
+python server.py --source replay --file ..\data\raw --loop          (every session in the folder)
 ```
 
-## Step 5. Train on real data and switch the dashboard to it
+## Step 5. Train on more data and switch the dashboard to it
 
 ```
-cd pm
-python train.py
+cd dashboard
+python train_baseline.py          (healthy-only Isolation Forest -> models\anomaly_baseline.joblib, 30 s)
+cd ..\pm
+python train.py                   (all models + leave-one-session-out reports in reports\, several minutes)
 ```
 
-This writes `models/anomaly_iforest.joblib` (healthy-only anomaly model), `models/fault_rf.joblib`
-(fault classifier, once fault sessions exist) and evaluation reports in `reports/`.
-
-Restart the dashboard. With `DASHBOARD_MODEL=auto` (the default) it **automatically uses
-`models/anomaly_iforest.joblib`** when that file exists. The model note under *Condition* shows which
-file is loaded. To also show which fault a window looks like:
+Restart the dashboard. With `DASHBOARD_MODEL=auto` it picks, in order: `models/anomaly_iforest.joblib`
+(from `pm/train.py`), the newest other `models/anomaly_*.joblib` / `.py` (for example the Phase II
+models), then `models/anomaly_baseline.joblib`. The note under *Condition* shows which file is loaded.
+To also show which fault a reading looks like (only once fault sessions exist):
 
 ```
 python server.py --source mqtt --classifier ..\models\fault_rf.joblib
 ```
 
-Retrain whenever you add sessions or change the rig (new mount, new blade, sensor moved).
+Then run `python selftest.py` again. Retrain when you add sessions or change the rig.
 
 ---
 
 ## How the alarm works
 
-- An isolation forest learns what healthy windows look like. The score says how unusual a 2 s
-  window is, and higher is worse. It uses the same features (`pm/features.py`) in training and live.
-- Threshold: the 99th percentile of scores on healthy sessions the model did not train on.
-- **Watch** means one window is over the threshold. **Anomaly** means 3 of the last 5 are
-  (`--alarm-k`, `--alarm-n`). At a 1% threshold a healthy fan still crosses it about every 3 minutes,
-  so a single window is not an alarm.
-- *Most unusual readings* lists the features furthest from the healthy average, in standard
-  deviations. It points at the cause but is not a diagnosis.
-- Every scored window is logged to `dashboard/data/live_<time>.csv`.
+There are two scores; either one can raise the alarm.
 
-## Dashboard options
+| | Model score | Change since baseline |
+|---|---|---|
+| Compares the reading with | all healthy recordings the model was trained on | the first minute of this run |
+| Good at | "this does not look like any healthy run we recorded" | a fault that starts while the motor runs |
+| Blind to | small faults (healthy runs differ from each other more than a small fault changes them) | a fault already present when the baseline was learned |
+| Threshold | 99th percentile of healthy sessions the model never saw (0.591 for the baseline model) | 6.0 (about 0.5 % of healthy readings over it on 7 Nov data) |
+
+- **Watch**: the latest reading is over a threshold. **Anomaly**: 3 of the last 5 are (`--alarm-k`, `--alarm-n`).
+  A single reading is not an alarm, because at a 1 % threshold a healthy motor still crosses it every ~3 minutes.
+- *Most unusual readings* lists the features furthest from normal, in robust standard deviations. It
+  points at the cause; it is not a diagnosis.
+- Baseline model, held-out check on the 7 Nov sessions: 1.0 % of healthy readings over the threshold,
+  0 % with the 3-of-5 alarm rule (`reports/baseline_anomaly.md`). There are no real fault recordings yet,
+  so there is no measured detection rate. Do not claim one.
+
+## Settings
 
 | Flag | `.env` | Default | Meaning |
 |---|---|---|---|
-| `--source sim / mqtt / replay` | `DASHBOARD_SOURCE` | `sim` | dummy motor, real ESP32, or a recorded file |
-| `--file PATH` | | | the `.jsonl` session for `replay` (add `--loop` to repeat) |
-| `--model PATH` | `DASHBOARD_MODEL` | `auto` | anomaly model; `auto` = real model if trained, else dummy |
-| `--classifier PATH` | `DASHBOARD_CLASSIFIER` | none | fault classifier from `pm/train.py` |
-| `--broker`, `--port-mqtt`, `--topic` | `MQTT_BROKER`, `MQTT_PORT`, `MQTT_TOPIC` | `localhost`, `1883`, `motor/sensors` | MQTT settings |
+| `--source sim / mqtt / replay` | `DASHBOARD_SOURCE` | `sim` | demo motor, real ESP32, or a recording |
+| `--file PATH` | `DASHBOARD_REPLAY` | | `.jsonl` file or folder for `replay` (`--loop` repeats) |
+| `--model PATH` | `DASHBOARD_MODEL` | `auto` | anomaly model, `.joblib` or plugin `.py` |
+| `--classifier PATH` | `DASHBOARD_CLASSIFIER` | none | fault classifier |
+| `--threshold X` | `DASHBOARD_THRESHOLD` | from the model | override the model's alarm threshold |
+| `--change-threshold X` | `DASHBOARD_CHANGE_THRESHOLD` | `6.0` | change-detector threshold |
+| `--learn N` | `DASHBOARD_LEARN` | `30` | readings used to learn the baseline (30 = 1 min) |
+| `--no-change` | | | turn the change detector off |
+| `--broker`, `--port-mqtt`, `--topic` | `MQTT_BROKER`, `MQTT_PORT`, `MQTT_TOPIC` | `localhost`, `1883`, `motor/sensors` | MQTT |
+| `--mqtt-user`, `--mqtt-password` | `MQTT_USER`, `MQTT_PASSWORD` | none | only if your broker needs a login |
 | `--port` | `DASHBOARD_PORT` | `8000` | web port |
-| `--interval` | | `2` | seconds between dummy or replayed readings |
+| `--interval S` | | `2` | seconds between demo or replayed readings |
+| `--save-raw` | | off | save received messages to `data/raw/live_*.jsonl` |
+| `--verbose` | | off | print every scored reading |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Dashboard says *Reconnecting* | `server.py` stopped; check its terminal for errors. |
-| `--source mqtt` but no data | Run `check_connection.py`. Most often the IPv4 in `secrets.h` is out of date or the firewall blocks port 1883. |
-| Current about 0.03 A | The PZEM ring is not seeing the current. See *PZEM current* in [docs/recording-and-training.md](docs/recording-and-training.md). |
-| Speed 0 RPM | The TCRT5000 is not seeing the reflective mark. Speed is then estimated from vibration. |
-| Alarms on a healthy fan with the real model | Record more healthy sessions (different days, after remounting) and retrain. |
-| `ModuleNotFoundError` | Activate the venv (`venv\Scripts\activate`) and run `pip install -r requirements.txt`. |
-
-## Honest limits
-
-- The dummy motor and dummy model only show that the software works end to end. Their detection
-  numbers say nothing about the real fan. Never report them as results.
-- Even on dummy data, a mild one-sided mount (severity 1) is caught only about 10% of the time.
-  Expect mild mounting faults to be the hardest on the real rig too.
+| Page says *Reconnecting* | `server.py` stopped. Look at its window for the error. |
+| Page says *No new reading for N s* | The ESP32 stopped sending. Check the OLED (`NOT SENDING`?), Wi-Fi, and that Mosquitto is still running. |
+| `--source mqtt`, badge says *MQTT disconnected* | Mosquitto is not running, or `MQTT_BROKER` in `.env` is wrong (on the PC itself it should be `localhost`). |
+| Badge says *MQTT connected* but no data | Run `check_connection.py`. Usually the IPv4 in the `.ino` is out of date, or the firewall blocks TCP 1883, or Mosquitto listens on localhost only (add `listener 1883 0.0.0.0`). |
+| An old reading appears the moment you connect | A retained message is stored on the broker. Clear it once: `mosquitto_pub -t motor/sensors -r -n` |
+| Alarm right after changing speed | Expected: the change detector compares with the old speed. Press **Re-learn baseline**. |
+| Alarms on a healthy motor with the model score | The motor or mount changed since training (or a new day/temperature). Record a few healthy sessions and retrain. |
+| `WARNING: N/436 model features are missing` | The model was trained on a different firmware or feature version. Retrain it on v3 recordings. |
+| `Message without a vibration burst skipped` | The ESP32 dropped one MPU6050 burst (I2C error). A few are normal; many mean loose SDA/SCL wires. |
+| Current ~0.03 A or 0 | PZEM ring: live wire only, all 18 turns the same direction. See `docs/recording-and-training.md`. |
+| Speed 0 RPM or jumping | TCRT5000 not seeing the taped stick. Tune its pot or move it closer. Speed is then estimated from vibration. |
+| `ModuleNotFoundError` | Activate the venv (`venv\Scripts\activate`) and `pip install -r requirements.txt`. |
+| Port 8000 already in use | Another dashboard is running. Close it or use `--port 8001`. |
