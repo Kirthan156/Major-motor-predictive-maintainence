@@ -82,7 +82,7 @@ class MyModel:
 
 | How | Example |
 |---|---|
-| Automatic (default) | `DASHBOARD_MODEL=auto`. The dashboard picks `models/anomaly_iforest.joblib`, then the newest other `models/anomaly_*.joblib` or `.py`, then `models/anomaly_baseline.joblib`. |
+| Automatic (default) | `DASHBOARD_MODEL=auto`. The dashboard picks `models/best_anomaly.joblib`, then `models/anomaly_iforest.joblib`, then the newest other `models/anomaly_*.joblib` or `.py`, then `models/anomaly_baseline.joblib`. |
 | In `.env` | `DASHBOARD_MODEL=../models/anomaly_autoencoder.py` |
 | On the command line | `python server.py --source mqtt --model ../models/anomaly_autoencoder.py --classifier ../models/fault_xgb.joblib` |
 

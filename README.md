@@ -181,7 +181,7 @@ cd ..\pm
 python train.py                   (all models + leave-one-session-out reports in reports\, several minutes)
 ```
 
-Restart the dashboard. With `DASHBOARD_MODEL=auto` it picks, in order: `models/anomaly_iforest.joblib`
+Restart the dashboard. With `DASHBOARD_MODEL=auto` it picks, in order: `models/best_anomaly.joblib` (the best model chosen by the Phase II code), `models/anomaly_iforest.joblib`
 (from `pm/train.py`), the newest other `models/anomaly_*.joblib` / `.py` (for example the Phase II
 models), then `models/anomaly_baseline.joblib`. The note under *Condition* shows which file is loaded.
 To also show which fault a reading looks like (only once fault sessions exist):

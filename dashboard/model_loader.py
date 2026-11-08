@@ -138,11 +138,15 @@ def load_model(path):
 
 def find_anomaly_model():
     """'auto': the best anomaly model that exists, in this order:
+    0. models/best_anomaly.joblib or .py (the best pick of the Phase II model code)
     1. models/anomaly_iforest.joblib   (pm/train.py, trained on your labelled sessions)
     2. any other models/anomaly_*.joblib or models/anomaly_*.py (e.g. from the Phase II model code), newest first
     3. models/anomaly_baseline.joblib  (dashboard/train_baseline.py on real healthy sessions)
     4. dashboard/models/anomaly_synthetic.joblib (synthetic data, pipeline demo only)
     """
+    for name in ("best_anomaly.joblib", "best_anomaly.py"):   # chosen by the Phase II model code
+        if (MODELS / name).exists():
+            return MODELS / name
     first = MODELS / "anomaly_iforest.joblib"
     if first.exists():
         return first
